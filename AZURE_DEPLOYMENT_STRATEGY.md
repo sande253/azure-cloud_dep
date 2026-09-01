@@ -68,6 +68,25 @@ Use one:
 - Azure Web Deploy from local
 - Container deployment (Dockerfile) to App Service for Containers
 
+For the included GitHub Actions workflow, create a service principal and save
+its JSON credentials as the repository secret `AZURE_CREDENTIALS`:
+
+```bash
+az ad sp create-for-rbac \
+  --name atoz-shop-github \
+  --role contributor \
+  --scopes /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP> \
+  --sdk-auth
+```
+
+Copy the complete JSON output into the GitHub repository secret
+`AZURE_CREDENTIALS`. Also add:
+
+- `AZURE_WEBAPP_NAME`: the App Service name
+
+The workflow logs in with `azure/login@v2`, runs smoke tests, and deploys only
+after a push to `main`. Pull requests run tests but do not deploy.
+
 ### 5. Migrate seed data
 Move initial product seed into:
 - migration/seed script
