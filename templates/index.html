@@ -595,6 +595,14 @@
                 <button id="clearCartBtn" class="clear">Clear Cart</button>
                 <button id="viewOrdersBtn" class="orders">Orders</button>
             </div>
+            <div style="margin-top:12px;">
+                <label for="couponInput" style="font-size:12px;color:var(--muted);">Promo code</label>
+                <div style="display:flex;gap:6px;margin-top:5px;">
+                    <input id="couponInput" placeholder="WELCOME10" style="min-width:0;flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;" />
+                    <button id="couponBtn" class="orders" style="border:0;border-radius:8px;padding:8px;cursor:pointer;">Apply</button>
+                </div>
+            </div>
+            <input id="addressInput" placeholder="Shipping address (demo)" style="width:100%;margin-top:8px;padding:9px;border:1px solid var(--border);border-radius:8px;" />
             <button id="checkoutBtn" class="checkout">Checkout</button>
 
             <div class="wishlist">
@@ -644,7 +652,9 @@
             heroClientId: document.getElementById("heroClientId"),
             dealsStrip: document.getElementById("dealsStrip"),
             productModal: document.getElementById("productModal"),
-            modalContent: document.getElementById("modalContent")
+            modalContent: document.getElementById("modalContent"),
+            couponInput: document.getElementById("couponInput"),
+            addressInput: document.getElementById("addressInput")
         };
 
         function money(value) {
@@ -835,6 +845,16 @@
             setStatus("Item removed from cart");
         }
 
+        async function applyCoupon() {
+            const code = ui.couponInput.value.trim();
+            if (!code) {
+                setStatus("Enter a promo code", true);
+                return;
+            }
+            const coupon = await request(`/api/coupons/${encodeURIComponent(code)}`);
+            setStatus(`${coupon.description} • applies at checkout`);
+        }
+
         async function clearCart() {
             const data = await request(`/api/cart?clientId=${encodeURIComponent(clientId)}`, { method: "DELETE" });
             renderCart(data);
@@ -866,9 +886,17 @@
         }
 
         async function checkout() {
-            const data = await request(`/api/checkout?clientId=${encodeURIComponent(clientId)}`, { method: "POST" });
+            const data = await request(`/api/checkout?clientId=${encodeURIComponent(clientId)}`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    couponCode: ui.couponInput.value.trim(),
+                    shippingAddress: ui.addressInput.value.trim()
+                })
+            });
             renderCart({ items: [], itemCount: 0, subtotal: 0, shipping: 0, tax: 0, total: 0 });
-            setStatus(`Order ${data.order.orderId} placed successfully`);
+            ui.couponInput.value = "";
+            setStatus(`Order ${data.order.orderId} placed successfully • Saved ${money(data.order.discount)}`);
         }
 
         async function showOrders() {
@@ -885,6 +913,10 @@
             const data = await request(`/api/products/${productId}`);
             const product = data.product;
             const related = data.related.slice(0, 3).map((item) => `<li>${safe(item.name)} (${money(item.price)})</li>`).join("");
+            const reviewData = await request(`/api/products/${productId}/reviews`);
+            const reviews = reviewData.reviews.length
+                ? reviewData.reviews.map((review) => `<div style="border-top:1px solid var(--border);padding:8px 0;"><strong>${safe(review.title)}</strong> <span>• ${"★".repeat(review.rating)}</span><div style="font-size:12px;color:var(--muted);">${safe(review.comment)}</div></div>`).join("")
+                : "<div style='color:var(--muted);'>No reviews yet. Be the first.</div>";
             ui.modalContent.innerHTML = `
                 <h3 style="margin:0;">${safe(product.name)}</h3>
                 <div class="modal-body">
@@ -898,8 +930,31 @@
                         <ul style="margin:0;padding-left:18px;">${related || "<li>No related items</li>"}</ul>
                     </div>
                 </div>
+                <div style="margin-top:14px;">
+                    <strong>Customer reviews ${reviewData.averageRating ? `• ${reviewData.averageRating}/5` : ""}</strong>
+                    <div style="max-height:130px;overflow:auto;margin-top:5px;">${reviews}</div>
+                    <div style="display:grid;grid-template-columns:80px 1fr;gap:6px;margin-top:10px;">
+                        <select id="reviewRating"><option value="5">5 stars</option><option value="4">4 stars</option><option value="3">3 stars</option><option value="2">2 stars</option><option value="1">1 star</option></select>
+                        <input id="reviewTitle" placeholder="Review title" />
+                        <textarea id="reviewComment" placeholder="Share your experience" style="grid-column:1/-1;min-height:55px;"></textarea>
+                        <button id="submitReview" data-review-product="${product.id}" style="grid-column:1/-1;padding:8px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer;">Submit review</button>
+                    </div>
+                </div>
             `;
             ui.productModal.classList.add("active");
+        }
+
+        async function submitReview(productId) {
+            const rating = Number(document.getElementById("reviewRating").value);
+            const title = document.getElementById("reviewTitle").value.trim();
+            const comment = document.getElementById("reviewComment").value.trim();
+            await request(`/api/products/${productId}/reviews?clientId=${encodeURIComponent(clientId)}`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({rating, title, comment})
+            });
+            setStatus("Review saved");
+            await quickView(productId);
         }
 
         async function refreshAll() {
@@ -994,6 +1049,16 @@
             }
         });
 
+        ui.modalContent.addEventListener("click", async (event) => {
+            const reviewButton = event.target.closest("#submitReview");
+            if (!reviewButton) return;
+            try {
+                await submitReview(reviewButton.dataset.reviewProduct);
+            } catch (error) {
+                setStatus(error.message, true);
+            }
+        });
+
         ui.cartItems.addEventListener("click", async (event) => {
             const removeBtn = event.target.closest("[data-cart-remove]");
             if (!removeBtn) return;
@@ -1027,6 +1092,14 @@
         document.getElementById("clearCartBtn").addEventListener("click", async () => {
             try {
                 await clearCart();
+            } catch (error) {
+                setStatus(error.message, true);
+            }
+        });
+
+        document.getElementById("couponBtn").addEventListener("click", async () => {
+            try {
+                await applyCoupon();
             } catch (error) {
                 setStatus(error.message, true);
             }

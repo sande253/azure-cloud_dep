@@ -1,7 +1,7 @@
 # Azure Deployment Strategy for AtoZ Shop
 
 ## Goal
-Deploy the Flask fullstack app (`main.py` + `templates/`) to Azure in a way that is easy to start and safe to scale.
+Deploy the Flask fullstack app (`app.py` + `templates/`) to Azure in a way that is easy to start and safe to scale.
 
 ## Recommended Strategy (Production)
 Use:
@@ -25,7 +25,7 @@ Why: your current SQLite (`app.db`) is fine for demo/single-instance usage, but 
 2. Deploy code from GitHub/zip/local.
 3. Set startup command:
    ```bash
-   gunicorn --bind 0.0.0.0:$PORT main:app
+   gunicorn --bind 0.0.0.0:$PORT app:app
    ```
 4. Set App Settings:
    - `WEBSITES_PORT=8000` (if needed by your setup)

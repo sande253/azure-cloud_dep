@@ -2,7 +2,7 @@
 
 An Amazon-style fullstack e-commerce demo built with:
 - **Frontend**: Responsive HTML/CSS/vanilla JavaScript UI
-- **Backend**: Flask APIs with catalog, cart, wishlist, deals, and orders
+- **Backend**: Flask APIs with catalog, cart, wishlist, deals, reviews, coupons, and orders
 - **Database**: SQLite (`app.db`) for persistent products/cart/wishlist/orders
 
 What changed in the overhaul:
@@ -11,6 +11,9 @@ What changed in the overhaul:
 - Added **deals feed** and **quick product view**
 - Added **wishlist APIs + UI**
 - Added **order history APIs + UI**
+- Added persistent **customer reviews** with one review per customer/product
+- Added **promo coupons** (`WELCOME10`, `SAVE20`, `FREESHIP`) during checkout
+- Added shipping address capture and richer order records
 - Upgraded visual design and responsiveness for desktop and mobile
 - Replaced in-memory backend state with a real **SQLite database**
 
@@ -31,7 +34,10 @@ On first start, the app auto-creates `app.db` and seeds products.
 - `GET /api/config`
 - `GET /api/products?search=...&category=...&minPrice=...&maxPrice=...&minRating=...&sort=...&page=...&pageSize=...`
 - `GET /api/products/<product_id>` (includes related products)
+- `GET /api/products/<product_id>/reviews`
+- `POST /api/products/<product_id>/reviews?clientId=<client-id>`
 - `GET /api/deals`
+- `GET /api/coupons/<code>`
 - `GET /api/cart?clientId=<client-id>`
 - `POST /api/cart/items?clientId=<client-id>`
 - `PATCH /api/cart/items/<product_id>?clientId=<client-id>`
@@ -51,6 +57,14 @@ On first start, the app auto-creates `app.db` and seeds products.
 `POST /api/wishlist/items` body example:
 ```json
 { "productId": 4 }
+```
+
+Checkout body example:
+```json
+{
+  "couponCode": "WELCOME10",
+  "shippingAddress": "123 Demo Street"
+}
 ```
 
 ## Deploy with Docker

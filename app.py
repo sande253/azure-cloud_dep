@@ -106,8 +106,39 @@ def init_db() -> None:
                 FOREIGN KEY (order_id) REFERENCES orders(order_id) ON DELETE CASCADE,
                 FOREIGN KEY (product_id) REFERENCES products(id)
             );
+
+            CREATE TABLE IF NOT EXISTS reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL,
+                client_id TEXT NOT NULL,
+                rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+                title TEXT NOT NULL,
+                comment TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (product_id, client_id),
+                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS coupons (
+                code TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                discount_percent INTEGER NOT NULL CHECK (discount_percent BETWEEN 0 AND 100),
+                minimum_subtotal REAL NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1
+            );
             """
         )
+
+        order_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(orders)").fetchall()
+        }
+        if "coupon_code" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN coupon_code TEXT")
+        if "discount" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN discount REAL NOT NULL DEFAULT 0")
+        if "shipping_address" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN shipping_address TEXT")
 
         count = conn.execute("SELECT COUNT(*) AS c FROM products").fetchone()["c"]
         if count == 0:
@@ -119,6 +150,18 @@ def init_db() -> None:
                 """,
                 PRODUCT_SEED,
             )
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO coupons
+            (code, description, discount_percent, minimum_subtotal, active)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("WELCOME10", "10% off orders over $50", 10, 50.0, 1),
+                ("SAVE20", "20% off orders over $150", 20, 150.0, 1),
+                ("FREESHIP", "Free shipping on any order", 0, 0.0, 1),
+            ],
+        )
 
 
 def get_client_id() -> str:
@@ -326,6 +369,80 @@ def get_product(product_id: int):
     return jsonify({"product": product, "related": [product_row_to_dict(r) for r in related_rows]})
 
 
+@app.get("/api/products/<int:product_id>/reviews")
+def get_reviews(product_id: int):
+    with get_conn() as conn:
+        product_exists = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if not product_exists:
+            abort(404, description="Product not found")
+        rows = conn.execute(
+            """
+            SELECT rating, title, comment, created_at
+            FROM reviews
+            WHERE product_id = ?
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (product_id,),
+        ).fetchall()
+        average = conn.execute(
+            "SELECT AVG(rating) AS average, COUNT(*) AS count FROM reviews WHERE product_id = ?",
+            (product_id,),
+        ).fetchone()
+    return jsonify(
+        {
+            "reviews": [
+                {
+                    "rating": row["rating"],
+                    "title": row["title"],
+                    "comment": row["comment"],
+                    "createdAt": row["created_at"],
+                }
+                for row in rows
+            ],
+            "averageRating": round(float(average["average"]), 1)
+            if average["average"] is not None
+            else None,
+            "count": int(average["count"]),
+        }
+    )
+
+
+@app.post("/api/products/<int:product_id>/reviews")
+def add_review(product_id: int):
+    client_id = get_client_id()
+    payload = request.get_json(silent=True) or {}
+    rating = payload.get("rating")
+    title = str(payload.get("title", "")).strip()
+    comment = str(payload.get("comment", "")).strip()
+    if not isinstance(rating, int) or not 1 <= rating <= 5:
+        abort(400, description="rating must be an integer from 1 to 5")
+    if not title or not comment:
+        abort(400, description="title and comment are required")
+    if len(title) > 100 or len(comment) > 1000:
+        abort(400, description="review title or comment is too long")
+
+    with get_conn() as conn:
+        product_exists = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if not product_exists:
+            abort(404, description="Product not found")
+        conn.execute(
+            """
+            INSERT INTO reviews (product_id, client_id, rating, title, comment, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id, client_id)
+            DO UPDATE SET rating = excluded.rating, title = excluded.title,
+                          comment = excluded.comment, created_at = excluded.created_at
+            """,
+            (product_id, client_id, rating, title, comment, iso_now()),
+        )
+    return jsonify({"ok": True, "message": "Review saved"}), 201
+
+
 @app.get("/api/deals")
 def deals():
     with get_conn() as conn:
@@ -338,6 +455,29 @@ def deals():
             """
         ).fetchall()
     return jsonify({"deals": [product_row_to_dict(row) for row in rows]})
+
+
+@app.get("/api/coupons/<string:code>")
+def validate_coupon(code: str):
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT code, description, discount_percent, minimum_subtotal
+            FROM coupons
+            WHERE code = ? AND active = 1
+            """,
+            (code.strip().upper(),),
+        ).fetchone()
+    if not row:
+        abort(404, description="Coupon not found or inactive")
+    return jsonify(
+        {
+            "code": row["code"],
+            "description": row["description"],
+            "discountPercent": row["discount_percent"],
+            "minimumSubtotal": row["minimum_subtotal"],
+        }
+    )
 
 
 @app.get("/api/cart")
@@ -480,17 +620,47 @@ def remove_wishlist_item(product_id: int):
 @app.post("/api/checkout")
 def checkout():
     client_id = get_client_id()
+    payload = request.get_json(silent=True) or {}
+    coupon_code = str(payload.get("couponCode", "")).strip().upper() or None
+    shipping_address = str(payload.get("shippingAddress", "")).strip()
     with get_conn() as conn:
         summary = cart_summary(conn, client_id)
         if not summary["items"]:
             abort(400, description="Cart is empty")
 
+        discount = 0.0
+        if coupon_code:
+            coupon = conn.execute(
+                """
+                SELECT code, discount_percent, minimum_subtotal
+                FROM coupons
+                WHERE code = ? AND active = 1
+                """,
+                (coupon_code,),
+            ).fetchone()
+            if not coupon:
+                abort(400, description="Coupon not found or inactive")
+            if summary["subtotal"] < coupon["minimum_subtotal"]:
+                abort(
+                    400,
+                    description=f"Coupon requires a subtotal of at least ${coupon['minimum_subtotal']:.2f}",
+                )
+            discount = round(summary["subtotal"] * coupon["discount_percent"] / 100, 2)
+            if coupon_code == "FREESHIP":
+                summary["shipping"] = 0.0
+            summary["total"] = round(
+                summary["subtotal"] + summary["shipping"] + summary["tax"] - discount,
+                2,
+            )
+
         order_id = f"ORD-{uuid4().hex[:8].upper()}"
         created_at = iso_now()
         conn.execute(
             """
-            INSERT INTO orders (order_id, client_id, created_at, item_count, subtotal, shipping, tax, total, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO orders
+            (order_id, client_id, created_at, item_count, subtotal, shipping, tax,
+             total, status, coupon_code, discount, shipping_address)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order_id,
@@ -502,6 +672,9 @@ def checkout():
                 summary["tax"],
                 summary["total"],
                 "Placed",
+                coupon_code,
+                discount,
+                shipping_address or None,
             ),
         )
         conn.executemany(
@@ -527,7 +700,13 @@ def checkout():
         "createdAt": created_at,
         "items": summary["items"],
         "itemCount": summary["itemCount"],
+        "subtotal": summary["subtotal"],
+        "shipping": summary["shipping"],
+        "tax": summary["tax"],
+        "discount": discount,
         "total": summary["total"],
+        "shippingAddress": shipping_address,
+        "couponCode": coupon_code,
         "status": "Placed",
     }
     return jsonify({"message": "Order placed successfully", "order": order})
@@ -540,6 +719,7 @@ def orders():
         rows = conn.execute(
             """
             SELECT order_id, created_at, item_count, total, status
+                   , subtotal, shipping, tax, coupon_code, discount, shipping_address
             FROM orders
             WHERE client_id = ?
             ORDER BY created_at DESC
@@ -553,6 +733,12 @@ def orders():
             "orderId": row["order_id"],
             "createdAt": row["created_at"],
             "itemCount": int(row["item_count"]),
+            "subtotal": float(row["subtotal"]),
+            "shipping": float(row["shipping"]),
+            "tax": float(row["tax"]),
+            "couponCode": row["coupon_code"],
+            "discount": float(row["discount"]),
+            "shippingAddress": row["shipping_address"],
             "total": float(row["total"]),
             "status": row["status"],
         }
