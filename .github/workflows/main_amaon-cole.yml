@@ -65,6 +65,6 @@ jobs:
         id: deploy
         uses: azure/webapps-deploy@v3
         with:
-          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
+          app-name: amaon-cole
           package: .
           startup-command: "gunicorn --bind=0.0.0.0:$PORT app:app"
