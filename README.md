@@ -73,5 +73,5 @@ pip install -r requirements.txt
 
 Start command:
 ```bash
-gunicorn --bind 0.0.0.0:$PORT main:app
+gunicorn --bind 0.0.0.0:$PORT app:app
 ```
